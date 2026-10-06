@@ -120,6 +120,19 @@ int ObDASIterUtils::create_das_ivf_scan_iter(
   return ret;
 }
 
+// KERNEL_R4(experiment): dump the das iter tree structure once per tree
+static void r3_dump_iter_tree(const ObDASBaseCtDef *ctdef, int64_t depth)
+{
+  if (nullptr == ctdef || depth > 6) {
+    return;
+  }
+  LOG_INFO("KERNEL_R4_NODE: das iter tree node", "depth", depth,
+           "op_type", static_cast<int64_t>(ctdef->op_type_));
+  for (int64_t i = 0; i < ctdef->children_cnt_; ++i) {
+    r3_dump_iter_tree(ctdef->children_[i], depth + 1);
+  }
+}
+
 int ObDASIterUtils::create_das_scan_iter_tree(ObDASIterTreeType tree_type,
                                               storage::ObTableScanParam &scan_param,
                                               const ObDASScanCtDef *scan_ctdef,
@@ -134,6 +147,9 @@ int ObDASIterUtils::create_das_scan_iter_tree(ObDASIterTreeType tree_type,
                                               common::ObIAllocator &alloc,
                                               ObDASIter *&iter_tree)
 {
+  // KERNEL_R4(experiment): dump the das iter tree structure
+  r3_dump_iter_tree(scan_ctdef, 0);
+  r3_dump_iter_tree(attach_ctdef, 0);
   int ret = OB_SUCCESS;
   switch (tree_type) {
     case ITER_TREE_PARTITION_SCAN: {

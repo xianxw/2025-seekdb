@@ -411,6 +411,9 @@ ObDASIterTreeType ObDASScanOp::get_iter_tree_type() const
                                               : ObDASIterTreeType::ITER_TREE_LOCAL_LOOKUP;
   }
   LOG_TRACE("get iter tree type", K(tree_type), K(scan_param_.tablet_id_), KPC(attach_ctdef_));
+  LOG_INFO("KERNEL_R4_TREE: iter tree type selected", K(tree_type),
+           K(scan_param_.tablet_id_), K(scan_param_.index_id_),
+           "has_attach", attach_ctdef_ != nullptr);
   return tree_type;
 }
 
