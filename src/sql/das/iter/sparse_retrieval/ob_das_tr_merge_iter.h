@@ -145,7 +145,6 @@ private:
   int gen_inv_idx_scan_default_range(const ObString &query_token, ObNewRange &scan_range);
   int gen_inv_idx_scan_one_range(const ObString &query_token, const ObDocIdExt &doc_id, ObNewRange &scan_range);
   int gen_inv_idx_scan_range_span(const ObString &query_token, const uint64_t lo_doc_id, const uint64_t hi_doc_id, ObNewRange &scan_range);
-  int gen_inv_idx_scan_range_span(const ObString &query_token, const uint64_t lo_doc_id, const uint64_t hi_doc_id, ObNewRange &scan_range);
   int gen_fwd_idx_scan_feak_range(ObNewRange &scan_range);
   int init_topk_limit();
   int init_block_max_iter_param();
