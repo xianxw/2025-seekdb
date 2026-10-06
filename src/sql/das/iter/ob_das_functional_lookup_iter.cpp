@@ -22,6 +22,8 @@
 #include "sql/das/ob_das_ir_define.h"
 #include "storage/concurrency_control/ob_data_validation_service.h"
 #include "sql/das/iter/ob_das_text_retrieval_iter.h"
+#include "lib/time/ob_time_utility.h"
+#include <atomic>
 
 namespace oceanbase
 {
@@ -127,12 +129,30 @@ int ObDASFuncLookupIter::do_table_scan()
   if (OB_UNLIKELY(index_scan_param.key_ranges_.empty())) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("unexpected key ranges count", K(index_scan_param.key_ranges_.count()), K(ret));
-  } else if (OB_FAIL(index_table_iter_->do_table_scan())) {
-    if (OB_SNAPSHOT_DISCARDED == ret && index_scan_param.fb_snapshot_.is_valid()) {
-      ret = OB_INVALID_QUERY_TIMESTAMP;
-    } else if (OB_TRY_LOCK_ROW_CONFLICT != ret) {
-      LOG_WARN("failed to do partition scan", K(index_scan_param), K(ret));
+  } else {
+    // KERNEL_R3(experiment): time the inv_idx scan that materializes per-(doc,token) rows
+    int64_t t0 = ObTimeUtility::current_time();
+    if (OB_FAIL(index_table_iter_->do_table_scan())) {
+      if (OB_SNAPSHOT_DISCARDED == ret && index_scan_param.fb_snapshot_.is_valid()) {
+        ret = OB_INVALID_QUERY_TIMESTAMP;
+      } else if (OB_TRY_LOCK_ROW_CONFLICT != ret) {
+        LOG_WARN("failed to do partition scan", K(index_scan_param), K(ret));
+      }
     }
+    int64_t elapsed = ObTimeUtility::current_time() - t0;
+    static std::atomic<int64_t> R3_TOTAL_NS(0);
+    static std::atomic<int64_t> R3_TOTAL_RANGES(0);
+    static std::atomic<int64_t> R3_TOTAL_ROWS(0);
+    R3_TOTAL_NS += elapsed * 1000;
+    R3_TOTAL_RANGES += index_scan_param.key_ranges_.count();
+    R3_TOTAL_ROWS += index_scan_rowsize_;
+    LOG_INFO("KERNEL_R3_LOOKUP: index table scan",
+             "ranges", index_scan_param.key_ranges_.count(),
+             "rows", index_scan_rowsize_,
+             "us", elapsed,
+             "total_ranges", R3_TOTAL_RANGES.load(),
+             "total_rows", R3_TOTAL_ROWS.load(),
+             "total_ms", R3_TOTAL_NS.load() / 1000000);
   }
   return ret;
 }
@@ -149,8 +169,22 @@ int ObDASFuncLookupIter::rescan()
   } else if (OB_UNLIKELY(index_scan_param.key_ranges_.empty())) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("unexpected key ranges count", K(index_scan_param.key_ranges_.count()), K(ret));
-  } else if (OB_FAIL(index_table_iter_->rescan())) {
-    LOG_WARN("failed to rescan index table iter", K(ret));
+  } else {
+    // KERNEL_R3(experiment): time the inv_idx rescan (per-batch per-token lookups)
+    int64_t t0 = ObTimeUtility::current_time();
+    if (OB_FAIL(index_table_iter_->rescan())) {
+      LOG_WARN("failed to rescan index table iter", K(ret));
+    }
+    int64_t elapsed = ObTimeUtility::current_time() - t0;
+    static std::atomic<int64_t> R3R_TOTAL_NS(0);
+    static std::atomic<int64_t> R3R_TOTAL_RANGES(0);
+    R3R_TOTAL_NS += elapsed * 1000;
+    R3R_TOTAL_RANGES += index_scan_param.key_ranges_.count();
+    LOG_INFO("KERNEL_R3_RESCAN: index table rescan",
+             "ranges", index_scan_param.key_ranges_.count(),
+             "us", elapsed,
+             "total_ranges", R3R_TOTAL_RANGES.load(),
+             "total_ms", R3R_TOTAL_NS.load() / 1000000);
   }
   return ret;
 }

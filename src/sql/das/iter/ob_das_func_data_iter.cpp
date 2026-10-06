@@ -21,6 +21,7 @@
 #include "sql/das/ob_das_scan_op.h"
 #include "sql/engine/ob_exec_context.h"
 #include "sql/das/iter/sparse_retrieval/ob_das_tr_merge_iter.h"
+#include "lib/time/ob_time_utility.h"
 
 using namespace oceanbase::common;
 
@@ -58,7 +59,15 @@ ObDASFuncDataIter::ObDASFuncDataIter()
     merge_memctx_(),
     doc_ids_(),
     read_count_(0),
-    start_table_scan_(false)
+    start_table_scan_(false),
+    stat_build_ns_(0),
+    stat_main_ns_(0),
+    stat_tokens_ns_(0),
+    stat_batches_(0),
+    stat_rows_(0),
+    stat_get_main_ns_(0),
+    stat_get_tokens_ns_(0),
+    stat_get_calls_(0)
   {}
 
 ObDASFuncDataIter::~ObDASFuncDataIter()
@@ -69,12 +78,18 @@ int ObDASFuncDataIter::do_table_scan()
 {
   int ret = OB_SUCCESS;
   start_table_scan_ = true;
+  int64_t t0 = ObTimeUtility::current_time();
+  int64_t t_phase = t0;
+  stat_batches_ += 1;
+  stat_rows_ += doc_ids_.count();
   if (OB_ISNULL(tr_merge_iters_) || OB_UNLIKELY(iter_count_ <= 0)) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("unexpeted error, tr merge iter is nullptr", K(ret));
   } else if (OB_FAIL(build_tr_merge_iters_rangekey())) {
     LOG_WARN("fail to build rowkey doc range", K(ret));
   } else {
+    stat_build_ns_ += ObTimeUtility::current_time() - t_phase;
+    t_phase = ObTimeUtility::current_time();
     if (nullptr != main_lookup_iter_) {
       if (OB_UNLIKELY(!main_lookup_tablet_id_.is_valid() || !main_lookup_ls_id_.is_valid())) {
         ret = OB_ERR_UNEXPECTED;
@@ -86,12 +101,15 @@ int ObDASFuncDataIter::do_table_scan()
           LOG_WARN("fail to do table scan for main lookup table", K(ret), KPC(main_lookup_iter_));
         }
       }
+      stat_main_ns_ += ObTimeUtility::current_time() - t_phase;
+      t_phase = ObTimeUtility::current_time();
     }
     for (int64_t i = 0; OB_SUCC(ret) && i < iter_count_; i++) {
       if (OB_FAIL(tr_merge_iters_[i]->do_table_scan())) {
         LOG_WARN("fail to do table scan for tr merge iter", K(ret), K(i), KPC(tr_merge_iters_[i]));
       }
     }
+    stat_tokens_ns_ += ObTimeUtility::current_time() - t_phase;
   }
   return ret;
 }
@@ -99,22 +117,39 @@ int ObDASFuncDataIter::do_table_scan()
 int ObDASFuncDataIter::rescan()
 {
   int ret = OB_SUCCESS;
+  int64_t t_phase = ObTimeUtility::current_time();
+  stat_batches_ += 1;
+  stat_rows_ += doc_ids_.count();
+  bool main_ok = true;
   if (OB_ISNULL(tr_merge_iters_) || OB_UNLIKELY(iter_count_ <= 0)) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("unexpeted error, tr merge iter is nullptr", K(ret));
   } else if (OB_FAIL(build_tr_merge_iters_rangekey())) {
+    stat_build_ns_ += ObTimeUtility::current_time() - t_phase;
     LOG_WARN("fail to build rowkey doc range", K(ret));
   } else if (!start_table_scan_) {
+    stat_build_ns_ += ObTimeUtility::current_time() - t_phase;
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("table scan is not started", K(ret));
-  } else if (nullptr != main_lookup_iter_ && OB_FAIL(main_lookup_iter_->rescan())) {
-    LOG_WARN("fail to do table scan for main lookup table", K(ret), KPC(main_lookup_iter_));
   } else {
-    for (int64_t i = 0; OB_SUCC(ret) && i < iter_count_; i++) {
-      if (OB_FAIL(tr_merge_iters_[i]->rescan())) {
-        LOG_WARN("fail to do table scan for tr merge iter", K(ret), K(i), KPC(tr_merge_iters_[i]));
+    stat_build_ns_ += ObTimeUtility::current_time() - t_phase;
+    t_phase = ObTimeUtility::current_time();
+    if (nullptr != main_lookup_iter_) {
+      if (OB_FAIL(main_lookup_iter_->rescan())) {
+        main_ok = false;
+        LOG_WARN("fail to do table scan for main lookup table", K(ret), KPC(main_lookup_iter_));
       }
     }
+    stat_main_ns_ += ObTimeUtility::current_time() - t_phase;
+    t_phase = ObTimeUtility::current_time();
+    if (OB_SUCC(ret) && main_ok) {
+      for (int64_t i = 0; OB_SUCC(ret) && i < iter_count_; i++) {
+        if (OB_FAIL(tr_merge_iters_[i]->rescan())) {
+          LOG_WARN("fail to do table scan for tr merge iter", K(ret), K(i), KPC(tr_merge_iters_[i]));
+        }
+      }
+    }
+    stat_tokens_ns_ += ObTimeUtility::current_time() - t_phase;
   }
   return ret;
 }
@@ -245,6 +280,17 @@ int ObDASFuncDataIter::inner_reuse()
 int ObDASFuncDataIter::inner_release()
 {
   int ret = OB_SUCCESS;
+  // KERNEL_R3(experiment): dump per-operator phase totals at teardown
+  if (stat_batches_ > 0) {
+    LOG_INFO("KERNEL_R3_STATS: func-lookup data iter phase totals",
+             K(stat_batches_), K(stat_rows_), K(iter_count_),
+             "build_us", stat_build_ns_ / 1000,
+             "main_us", stat_main_ns_ / 1000,
+             "tokens_us", stat_tokens_ns_ / 1000,
+             "get_main_us", stat_get_main_ns_ / 1000,
+             "get_tokens_us", stat_get_tokens_ns_ / 1000,
+             "get_calls", stat_get_calls_);
+  }
   if (OB_NOT_NULL(merge_memctx_)) {
     DESTROY_CONTEXT(merge_memctx_);
     merge_memctx_ = nullptr;
@@ -308,6 +354,8 @@ int ObDASFuncDataIter::inner_get_next_rows(int64_t &count, int64_t capacity)
   int64_t tr_merge_count = 0;
   int64_t default_size = doc_ids_.count();
 
+  int64_t t_get = ObTimeUtility::current_time();
+  stat_get_calls_ += 1;
   if (OB_ISNULL(tr_merge_iters_)) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("unexpected error, tr merge iter is nullptr", K(ret));
@@ -322,6 +370,8 @@ int ObDASFuncDataIter::inner_get_next_rows(int64_t &count, int64_t capacity)
     if (OB_ITER_END == ret) {
       ret = OB_SUCCESS;
     }
+    stat_get_main_ns_ += ObTimeUtility::current_time() - t_get;
+    t_get = ObTimeUtility::current_time();
   }
   if (OB_SUCC(ret) && OB_UNLIKELY(main_lookup_iter_ && default_size < main_lookup_count + read_count_)) {
     ret = OB_ERR_UNEXPECTED;
@@ -357,6 +407,7 @@ int ObDASFuncDataIter::inner_get_next_rows(int64_t &count, int64_t capacity)
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("unexpected error, tr merge count is not equal to main lookup count", K(ret), K(tr_merge_count), K(main_lookup_count));
   }
+  stat_get_tokens_ns_ += ObTimeUtility::current_time() - t_get;
   if (OB_SUCC(ret)) {
     count = tr_merge_count;
     if (0 == tr_merge_count) {
