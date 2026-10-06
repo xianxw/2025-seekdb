@@ -88,9 +88,6 @@ private:
   common::ObNewRowIterator *result_;
   // must ensure the lifecycle of scan param is longer than scan iter.
   storage::ObTableScanParam *scan_param_;
-  // KERNEL_R3(experiment): cached ir scan type for timing
-  int r3_ir_type_ = 0;
-
 };
 
 

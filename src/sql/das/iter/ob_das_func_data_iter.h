@@ -154,15 +154,6 @@ private:
   ObSEArray<std::pair<ObDocIdExt, int>, 4> doc_ids_;
   int64_t read_count_;
   bool start_table_scan_;
-  // KERNEL_R3(experiment): per-query phase timing for func-lookup cost decomposition
-  int64_t stat_build_ns_;
-  int64_t stat_main_ns_;
-  int64_t stat_tokens_ns_;
-  int64_t stat_batches_;
-  int64_t stat_rows_;
-  int64_t stat_get_main_ns_;
-  int64_t stat_get_tokens_ns_;
-  int64_t stat_get_calls_;
 };
 
 } // end namespace sql

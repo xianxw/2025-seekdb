@@ -2509,15 +2509,6 @@ int ObJoinOrder::check_and_extract_query_range(const uint64_t table_id,
   bool is_special_index = index_info_entry.is_index_geo() ||
                           index_info_entry.is_multivalue_index() ||
                           index_info_entry.is_fulltext_index();
-  // KERNEL_R1(experiment): instrument fulltext candidate gate. Computed here and logged
-  // BEFORE the chain so the original fall-through semantics stay intact.
-  const bool r1_is_ft = index_info_entry.is_fulltext_index();
-  bool r1_range_valid = false;
-  if (r1_is_ft) {
-    r1_range_valid = index_info_entry.get_range_info().is_valid();
-    LOG_INFO("KERNEL_R1_GATE: fulltext index candidate evaluated",
-             K(table_id), "range_valid", r1_range_valid, "restrict_cnt", restrict_infos.count());
-  }
   if (index_info_entry.is_multivalue_index() &&
       OB_FAIL(check_exprs_overlap_multivalue_index(table_id, index_table_id, restrict_infos, index_keys, expr_match))) {
     LOG_WARN("get_range_columns failed", K(ret));
@@ -2525,7 +2516,7 @@ int ObJoinOrder::check_and_extract_query_range(const uint64_t table_id,
              OB_FAIL(check_exprs_overlap_gis_index(restrict_infos, index_keys, expr_match))) {
     LOG_WARN("check quals match gis index error", K(restrict_infos), K(index_keys));
   } else if (index_info_entry.is_fulltext_index() &&
-             OB_FALSE_IT(expr_match = r1_range_valid)) {
+             OB_FALSE_IT(expr_match = index_info_entry.get_range_info().is_valid())) {
   } else if (!is_special_index && OB_FAIL(check_exprs_overlap_index(restrict_infos, index_keys, expr_match))) {
     LOG_WARN("check quals match index error", K(restrict_infos), K(index_keys));
   } else if (expr_match) {
@@ -7802,19 +7793,6 @@ int AccessPath::estimate_cost()
       LOG_WARN("failed to do cost table", K(ret), K(est_cost_info_), K(parallel_));
     } else if (!adj_cost_is_valid) {
       cost_ = storage_est_cost;
-      // KERNEL_R2(experiment, concluded 2026-10-06): discount 0.1 flipped the plan to
-      // TEXT RETRIEVAL SCAN. Results stayed exactly equivalent (top10 diff, recall
-      // 0.9565) but latency regressed 68ms -> ~316ms (4.7x): the retrieval path scores
-      // ALL matching docs and cannot exploit scalar-filter selectivity. Discount kept
-      // neutral at 1.0; the real fix is candidate-set-aware doc skipping in the
-      // retrieval iterators (round-3, see kernel-comp-notes/第二轮报告.md).
-      if (est_cost_info_.index_meta_info_.is_fulltext_index_) {
-        constexpr double FT_COST_DISCOUNT = 1.0;
-        LOG_INFO("KERNEL_R2_COST: fulltext candidate raw cost",
-                 K(index_id_), K(storage_est_cost), K(FT_COST_DISCOUNT));
-        cost_ = storage_est_cost * FT_COST_DISCOUNT;
-        LOG_INFO("KERNEL_R2_COST: fulltext candidate discounted", K(cost_));
-      }
       OPT_TRACE_COST_MODEL(KV_(cost), "=", KV(storage_est_cost));
     } else if (OB_FALSE_IT(est_cost_info_.phy_query_range_row_count_ = stats_phy_query_range_row_count)) {
     } else if (OB_FALSE_IT(est_cost_info_.logical_query_range_row_count_ = stats_logical_query_range_row_count)) {

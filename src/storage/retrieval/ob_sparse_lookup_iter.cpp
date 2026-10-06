@@ -185,14 +185,6 @@ int ObSRSortedLookupIter::load_results()
   int ret = OB_SUCCESS;
   int cur_idx = 0;
   bool iter_end = false;
-  static std::atomic<int64_t> R3L_CALLS(0);
-  const bool r3_trace = true;
-  const int64_t r3_call_no = R3L_CALLS.fetch_add(1);
-  if (r3_trace) {
-    LOG_INFO("KERNEL_R3L: load_results entry", K_(rangekey_size), "call_no", r3_call_no,
-             "first_id", cached_domain_ids_[0].get_datum().get_uint(),
-             "last_id", cached_domain_ids_[rangekey_size_ - 1].get_datum().get_uint());
-  }
   while (OB_SUCC(ret) && !iter_end && cur_idx < rangekey_size_) {
     int64_t sub_count = 0;
     if (OB_FAIL(merge_iter_->get_next_rows(rangekey_size_ - cur_idx, sub_count))) {
@@ -209,27 +201,11 @@ int ObSRSortedLookupIter::load_results()
     const ObDatumVector &relevance_datums = iter_param_->relevance_proj_expr_->locate_expr_datumvector(*eval_ctx);
     int cmp_result = 0;
     for (int64_t i = 0; OB_SUCC(ret) && i < sub_count; ) {
-      if (r3_trace && cur_idx < rangekey_size_) {
-        LOG_INFO("KERNEL_R3L: row", K(cur_idx), K(i),
-                 "merge_id", id_datums.at(i)->get_uint(),
-                 "cached_id", cached_domain_ids_[cur_idx].get_datum().get_uint());
-      }
       if (OB_UNLIKELY(cur_idx >= rangekey_size_)) {
         ret = OB_ERR_UNEXPECTED;
-        LOG_WARN("unexpected cur idx", K(ret), K(cur_idx), K_(rangekey_size),
-                 "call_no", r3_call_no, "merge_id", id_datums.at(i)->get_uint(),
-                 "last_cached", cached_domain_ids_[rangekey_size_ - 1].get_datum().get_uint());
+        LOG_WARN("unexpected cur idx", K(ret), K(cur_idx), K_(rangekey_size));
       } else if (OB_FAIL(cmp_func_(cached_domain_ids_[cur_idx].get_datum(), *id_datums.at(i), cmp_result))) {
         LOG_WARN("failed to compare id datums", K(ret));
-      } else if (cmp_result > 0) {
-        // KERNEL_R3(experiment): dump mismatch details
-        LOG_INFO("KERNEL_R3_DBG: merge id beyond cached", K(cur_idx), K_(rangekey_size),
-                 "merge_id", id_datums.at(i)->get_uint(),
-                 "cached_lo", cached_domain_ids_[0].get_datum().get_uint(),
-                 "cached_hi", cached_domain_ids_[rangekey_size_ - 1].get_datum().get_uint(),
-                 "i", i, K(sub_count));
-        ret = OB_ERR_UNEXPECTED;
-        LOG_WARN("unexpected comparison result", K(ret), K(cmp_result));
       } else if (0 == cmp_result) {
         cached_relevances_[cur_idx] = relevance_datums.at(i)->get_double();
         ++cur_idx;
@@ -239,9 +215,7 @@ int ObSRSortedLookupIter::load_results()
         ++cur_idx;
       } else {
         ret = OB_ERR_UNEXPECTED;
-        LOG_WARN("unexpected comparison result(cached>merge)", K(ret), K(cmp_result), K(cur_idx),
-                 "cached_id", cached_domain_ids_[cur_idx].get_datum().get_uint(),
-                 "merge_id", id_datums.at(i)->get_uint());
+        LOG_WARN("unexpected comparison result", K(ret), K(cmp_result));
       }
     }
   }

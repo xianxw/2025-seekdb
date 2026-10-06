@@ -17,8 +17,6 @@
 #define USING_LOG_PREFIX SQL_DAS
 #include "ob_das_match_iter.h"
 #include "sql/das/ob_das_ir_define.h"
-#include "lib/time/ob_time_utility.h"
-#include <atomic>
 
 namespace oceanbase
 {
@@ -203,8 +201,6 @@ int ObDASMatchIter::do_table_scan()
 
 int ObDASMatchIter::rescan()
 {
-
-  int64_t r3_t0 = ObTimeUtility::current_time();
   int ret = OB_SUCCESS;
   for (int64_t i = 0; OB_SUCC(ret) && i < children_cnt_; ++i) {
     ObDASIter *child = children_[i];
@@ -216,16 +212,6 @@ int ObDASMatchIter::rescan()
     }
   }
   return ret;
-  {
-    static std::atomic<int64_t> R3M_RCNT(0);
-    static std::atomic<int64_t> R3M_RNS(0);
-    R3M_RCNT += 1;
-    R3M_RNS += (ObTimeUtility::current_time() - r3_t0) * 1000;
-    if (R3M_RCNT.load() % 64 == 1) {
-      LOG_INFO("KERNEL_R3_MATCH_RESCAN: children rescan cum", "children_cnt", children_cnt_,
-               "cum_cnt", R3M_RCNT.load(), "cum_ms", R3M_RNS.load() / 1000000);
-    }
-  }
 }
 
 int ObDASMatchIter::inner_reuse()
@@ -355,7 +341,6 @@ int ObDASMatchIter::inner_get_next_row()
 
 int ObDASMatchIter::inner_get_next_rows(int64_t &count, int64_t capacity)
 {
-  int64_t r3_t0 = ObTimeUtility::current_time();
   int ret = OB_SUCCESS;
   if (OB_UNLIKELY(!is_inited_)) {
     ret = OB_NOT_INIT;
@@ -428,19 +413,6 @@ int ObDASMatchIter::inner_get_next_rows(int64_t &count, int64_t capacity)
       if (count > 0 && OB_FAIL(project_results(count))) {
         LOG_WARN("failed to project results", K(ret), K(count));
       }
-    }
-  }
-  {
-    static std::atomic<int64_t> R3M_GNS(0);
-    static std::atomic<int64_t> R3M_GROWS(0);
-    static std::atomic<int64_t> R3M_GCNT(0);
-    R3M_GNS += (ObTimeUtility::current_time() - r3_t0) * 1000;
-    R3M_GROWS += count;
-    R3M_GCNT += 1;
-    if (R3M_GCNT.load() % 256 == 1) {
-      LOG_INFO("KERNEL_R3_MATCH_STREAM: cum", "children_cnt", children_cnt_,
-               "cum_cnt", R3M_GCNT.load(), "cum_rows", R3M_GROWS.load(),
-               "cum_ms", R3M_GNS.load() / 1000000);
     }
   }
   return ret;

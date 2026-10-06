@@ -17,8 +17,6 @@
 #define USING_LOG_PREFIX SQL_DAS
 #include "sql/das/iter/ob_das_scan_iter.h"
 #include "storage/tx_storage/ob_access_service.h"
-#include "lib/time/ob_time_utility.h"
-#include <atomic>
 #include "src/sql/engine/ob_exec_context.h"
 
 namespace oceanbase
@@ -35,7 +33,6 @@ int ObDASScanIter::inner_init(ObDASIterParam &param)
     LOG_WARN("inner init das iter with bad param type", K(param), K(ret));
   } else {
     const ObDASScanCtDef *scan_ctdef = (static_cast<ObDASScanIterParam&>(param)).scan_ctdef_;
-    r3_ir_type_ = static_cast<int>(scan_ctdef->ir_scan_type_);
     output_ = &scan_ctdef->result_output_;
     tsc_service_ = is_virtual_table(scan_ctdef->ref_table_id_) ? GCTX.vt_par_ser_
                               : scan_ctdef->is_external_table_ ? GCTX.et_access_service_
@@ -77,7 +74,6 @@ int ObDASScanIter::inner_release()
 int ObDASScanIter::do_table_scan()
 {
   int ret = OB_SUCCESS;
-  int64_t r3_t0 = ObTimeUtility::current_time();
   if (OB_ISNULL(scan_param_)) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("unexpected nullptr scan param", K(ret));
@@ -91,30 +87,6 @@ int ObDASScanIter::do_table_scan()
       LOG_WARN("fail to scan table", KPC_(scan_param), K(ret));
     }
   }
-  // KERNEL_R3(experiment): per-ir-scan-type timing
-  {
-    static std::atomic<int64_t> R3_NS[12];
-    static std::atomic<int64_t> R3_CNT[12];
-    static std::atomic<int64_t> R3_RANGES[12];
-    int t = r3_ir_type_;
-    if (t >= 0 && t < 12) {
-      int64_t el = ObTimeUtility::current_time() - r3_t0;
-      R3_NS[t] += el * 1000;
-      R3_CNT[t] += 1;
-      R3_RANGES[t] += scan_param_->key_ranges_.count();
-      if (t == 0 && R3_CNT[t].load() % 2000 == 1) {
-        LOG_INFO("KERNEL_R3_SCAN0: regular scan cum", "cum_ms", R3_NS[t].load() / 1000000,
-                 "cum_cnt", R3_CNT[t].load());
-      }
-      if (t != 0) {
-        LOG_INFO("KERNEL_R3_SCAN: ir scan done", "type", t,
-                 "ranges", scan_param_->key_ranges_.count(),
-                 "us", el,
-                 "cum_ms", R3_NS[t].load() / 1000000,
-                 "cum_cnt", R3_CNT[t].load());
-      }
-    }
-  }
   LOG_DEBUG("[DAS ITER] scan iter do table scan", KPC_(scan_param), K(ret));
 
   return ret;
@@ -123,7 +95,6 @@ int ObDASScanIter::do_table_scan()
 int ObDASScanIter::rescan()
 {
   int ret = OB_SUCCESS;
-  int64_t r3_t0 = ObTimeUtility::current_time();
   if (OB_ISNULL(scan_param_)) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("unexpected nullptr scan param", K(ret));
@@ -135,32 +106,6 @@ int ObDASScanIter::rescan()
   } else {
     // reset need_switch_param_ after real rescan.
     scan_param_->need_switch_param_ = false;
-  }
-  // KERNEL_R3(experiment): per-ir-scan-type timing
-  {
-    static std::atomic<int64_t> R3R_NS[12];
-    static std::atomic<int64_t> R3R_CNT[12];
-    static std::atomic<int64_t> R3R_RANGES[12];
-    int t = r3_ir_type_;
-    if (t >= 0 && t < 12) {
-      int64_t el = ObTimeUtility::current_time() - r3_t0;
-      R3R_NS[t] += el * 1000;
-      R3R_CNT[t] += 1;
-      R3R_RANGES[t] += scan_param_->key_ranges_.count();
-      if (t != 0) {
-        LOG_INFO("KERNEL_R3_RESCAN2: ir rescan done", "type", t,
-                 "ranges", scan_param_->key_ranges_.count(),
-                 "us", el,
-                 "cum_ms", R3R_NS[t].load() / 1000000,
-                 "cum_cnt", R3R_CNT[t].load());
-        if (t == 3 && scan_param_->key_ranges_.count() > 100) {
-          const ObNewRange &r0 = scan_param_->key_ranges_.at(0);
-          const ObNewRange &r1 = scan_param_->key_ranges_.at(1);
-          LOG_INFO("KERNEL_R3_KEYS: sample ranges", K(r0.start_key_), K(r1.start_key_),
-                   "table_id", scan_param_->index_id_);
-        }
-      }
-    }
   }
   LOG_DEBUG("[DAS ITER] das scan iter rescan", KPC_(scan_param), K(ret));
 
@@ -186,7 +131,6 @@ int ObDASScanIter::inner_get_next_row()
 int ObDASScanIter::inner_get_next_rows(int64_t &count, int64_t capacity)
 {
   int ret = OB_SUCCESS;
-  int64_t r3_t0 = ObTimeUtility::current_time();
   common::ObASHTabletIdSetterGuard ash_tablet_id_guard(scan_param_ != nullptr? scan_param_->index_id_ : 0);
 
   if (OB_ISNULL(result_)) {
@@ -195,38 +139,6 @@ int ObDASScanIter::inner_get_next_rows(int64_t &count, int64_t capacity)
   } else if (OB_FAIL(result_->get_next_rows(count, capacity))) {
     if (ret != OB_ITER_END) {
       LOG_WARN("failed to get next row", K(ret));
-    }
-  }
-  // KERNEL_R3(experiment): split storage fetch vs wrapper for type=3
-  if (r3_ir_type_ == 3) {
-    static std::atomic<int64_t> R3SStorageNS(0);
-    static std::atomic<int64_t> R3SRows(0);
-    R3SStorageNS += (ObTimeUtility::current_time() - r3_t0) * 1000;
-    R3SRows += count;
-    static int64_t last_logged_rows = 0;
-    if (R3SRows.load() - last_logged_rows >= 512) {
-      last_logged_rows = R3SRows.load();
-      LOG_INFO("KERNEL_R3_LEAF: storage fetch cum", "cum_ms", R3SStorageNS.load() / 1000000,
-               "cum_rows", R3SRows.load());
-    }
-  }
-  // KERNEL_R3(experiment): streaming cost per ir scan type
-  {
-    int t = r3_ir_type_;
-    if (t > 0 && t < 12) {
-      static std::atomic<int64_t> R3G_NS[12];
-      static std::atomic<int64_t> R3G_ROWS[12];
-      static std::atomic<int64_t> R3G_CNT[12];
-      R3G_NS[t] += (ObTimeUtility::current_time() - r3_t0) * 1000;
-      R3G_ROWS[t] += count;
-      R3G_CNT[t] += 1;
-      if (t == 3) {
-        LOG_INFO("KERNEL_R3_STREAM: ir stream call", "rows", count,
-                 "us", ObTimeUtility::current_time() - r3_t0,
-                 "cum_ms", R3G_NS[t].load() / 1000000,
-                 "cum_rows", R3G_ROWS[t].load(),
-                 "cum_cnt", R3G_CNT[t].load());
-      }
     }
   }
   LOG_TRACE("[DAS ITER] scan iter get next rows", K(count), K(capacity), KPC_(scan_param), K(ret));
