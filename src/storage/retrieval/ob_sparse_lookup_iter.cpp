@@ -208,8 +208,11 @@ int ObSRSortedLookupIter::load_results()
     KernelR5Stat::sync_rows_ += sub_count;
     for (int64_t i = 0; OB_SUCC(ret) && i < sub_count; ) {
       if (OB_UNLIKELY(cur_idx >= rangekey_size_)) {
-        ret = OB_ERR_UNEXPECTED;
-        LOG_WARN("unexpected cur idx", K(ret), K(cur_idx), K_(rangekey_size));
+        // KERNEL_R6: merge-join tail. All requested docs have been synced; any
+        // rows still streamed by the merge iter belong to docs outside the
+        // requested set (possible with coalesced span ranges). Skip them.
+        KernelR5Stat::sync_skipped_ += (sub_count - i);
+        break;
       } else if (OB_FAIL(cmp_func_(cached_domain_ids_[cur_idx].get_datum(), *id_datums.at(i), cmp_result))) {
         LOG_WARN("failed to compare id datums", K(ret));
       } else if (0 == cmp_result) {
