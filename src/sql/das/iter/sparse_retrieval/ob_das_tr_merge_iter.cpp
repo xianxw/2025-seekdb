@@ -767,6 +767,8 @@ int ObDASTRMergeIter::set_children_iter_rangekey(const common::ObIArray<std::pai
     bool coalesce_ok = false;
     uint64_t id_lo = 0;
     uint64_t id_hi = 0;
+    const ObDocIdExt *lo_doc_ = nullptr;
+    const ObDocIdExt *hi_doc_ = nullptr;
     if (batch_size > 0 && !taat_mode_) {
       const ObObjMeta &id_meta = ir_ctdef_->inv_scan_domain_id_col_->obj_meta_;
       const bool is_int_id = (ObUInt64Type == id_meta.get_type() || ObIntType == id_meta.get_type());
@@ -792,12 +794,14 @@ int ObDASTRMergeIter::set_children_iter_rangekey(const common::ObIArray<std::pai
           coalesce_ok = true;
           id_lo = virtual_rangekeys.at(0).first.get_datum().get_uint();
           id_hi = virtual_rangekeys.at(batch_size - 1).first.get_datum().get_uint();
+          lo_doc_ = &virtual_rangekeys.at(0).first;
+          hi_doc_ = &virtual_rangekeys.at(batch_size - 1).first;
         }
       }
     }
     for (int64_t i = 0; OB_SUCC(ret) && i < dim_iter_cnt; ++i) {
       if (coalesce_ok) {
-        if (OB_FAIL(gen_inv_idx_scan_range_span(query_tokens_[i], id_lo, id_hi, inv_idx_scan_range))) {
+        if (OB_FAIL(gen_inv_idx_scan_range_span(query_tokens_[i], *lo_doc_, *hi_doc_, inv_idx_scan_range))) {
           LOG_WARN("failed to generate coalesced inverted index scan range", K(ret), K(query_tokens_[i]));
         } else if (FALSE_IT(inv_idx_scan_range.group_idx_ = group_idx)) {
         } else if (OB_FAIL(inv_scan_params_[i]->key_ranges_.push_back(inv_idx_scan_range))) {
@@ -906,8 +910,8 @@ int ObDASTRMergeIter::gen_inv_idx_scan_one_range(const ObString &query_token, co
 }
 
 int ObDASTRMergeIter::gen_inv_idx_scan_range_span(const ObString &query_token,
-                                                  const uint64_t lo_doc_id,
-                                                  const uint64_t hi_doc_id,
+                                                  const ObDocIdExt &lo_doc,
+                                                  const ObDocIdExt &hi_doc,
                                                   ObNewRange &scan_range)
 {
   // KERNEL_R6(optimization): closed range [lo, hi] over consecutive numeric doc ids
@@ -932,13 +936,13 @@ int ObDASTRMergeIter::gen_inv_idx_scan_range_span(const ObString &query_token,
   } else if (OB_FAIL(ob_write_obj(ctx_alloc, tmp_obj, obj_ptr[2]))) {
     LOG_WARN("failed to write obj", K(ret));
   } else {
-    ObDatum lo_datum;
-    ObDatum hi_datum;
-    lo_datum.set_uint(lo_doc_id);
-    hi_datum.set_uint(hi_doc_id);
-    if (OB_FAIL(lo_datum.to_obj(obj_ptr[1], id_meta))) {
+    // KERNEL_R6 fix: build boundary objs from the RAW datums of the batch's
+    // first/last doc ids (same encoding as the point-range path). Rebuilding
+    // datums via set_uint() produced objs whose type flag did not match the
+    // stored column, making the end key sort after every row (open-ended scan).
+    if (OB_FAIL(lo_doc.get_datum().to_obj(obj_ptr[1], id_meta))) {
       LOG_WARN("failed to set lo obj", K(ret));
-    } else if (OB_FAIL(hi_datum.to_obj(obj_ptr[3], id_meta))) {
+    } else if (OB_FAIL(hi_doc.get_datum().to_obj(obj_ptr[3], id_meta))) {
       LOG_WARN("failed to set hi obj", K(ret));
     } else {
       common::ObTableID inv_table_id = ir_ctdef_->get_inv_idx_scan_ctdef()->ref_table_id_;
