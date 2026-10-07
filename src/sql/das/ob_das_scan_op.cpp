@@ -17,6 +17,7 @@
 #define USING_LOG_PREFIX SQL_DAS
 #include "ob_das_scan_op.h"
 #include "sql/das/ob_das_extra_data.h"
+#include "sql/das/ob_kernel_r5_stat.h"
 #include "storage/concurrency_control/ob_data_validation_service.h"
 #include "sql/das/iter/ob_das_iter_utils.h"
 #include "storage/tx_storage/ob_access_service.h"
@@ -636,6 +637,7 @@ int ObDASScanOp::decode_task_result(ObIDASTaskResult *task_result)
 int ObDASScanOp::fill_task_result(ObIDASTaskResult &task_result, bool &has_more, int64_t &memory_limit)
 {
   int ret = OB_SUCCESS;
+  int64_t t0 = ObTimeUtility::current_time();
   bool added = false;
   int64_t simulate_row_cnt = - EVENT_CALL(EventTable::EN_DAS_SCAN_RESULT_OVERFLOW);
   has_more = false;
@@ -744,6 +746,8 @@ int ObDASScanOp::fill_task_result(ObIDASTaskResult &task_result, bool &has_more,
     scan_result.add_memstore_read_row_cnt(*scan_rtdef_->tsc_monitor_info_->memstore_read_row_cnt_);
     scan_rtdef_->tsc_monitor_info_->reset_stat();
   }
+  KernelR5Stat::fill_ns_ += ObTimeUtility::current_time() - t0;
+  KernelR5Stat::fill_rows_ += enable_rich_format() ? vec_row_store.get_row_cnt() : datum_store.get_row_cnt();
   return ret;
 }
 

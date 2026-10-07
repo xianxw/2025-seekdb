@@ -17,6 +17,8 @@
 #define USING_LOG_PREFIX STORAGE
 
 #include "ob_text_retrieval_token_iter.h"
+#include "sql/das/ob_kernel_r5_stat.h"
+#include "lib/time/ob_time_utility.h"
 #include "sql/engine/expr/ob_expr_bm25.h"
 #include "sql/das/iter/sparse_retrieval/ob_das_tr_merge_iter.h"
 
@@ -586,6 +588,7 @@ int ObTextRetrievalTokenIter::set_decimal_int_by_precision(ObDatum &result_datum
 int ObTextRetrievalTokenIter::estimate_token_doc_cnt()
 {
   int ret = OB_SUCCESS;
+  int64_t r5_e0 = ObTimeUtility::current_time();
   int64_t logical_row_cnt = 0;
   int64_t physical_row_cnt = 0;
   ObSEArray<ObEstRowCountRecord, 1> est_records;
@@ -634,6 +637,8 @@ int ObTextRetrievalTokenIter::estimate_token_doc_cnt()
       max_token_relevance_ = sql::ObExprBM25::query_token_weight(token_doc_cnt_, total_doc_cnt);
     }
   }
+  KernelR5Stat::est_ns_ += ObTimeUtility::current_time() - r5_e0;
+  KernelR5Stat::est_cnt_ += 1;
   return ret;
 }
 
@@ -716,24 +721,32 @@ void ObTextRetrievalDaaTTokenIter::reset()
 // Sparse Retrieval Dimension Iter Interfaces
 int ObTextRetrievalDaaTTokenIter::get_next_row() {
   int ret = OB_SUCCESS;
+  int64_t r5_t0 = ObTimeUtility::current_time();
   bool need_load = false;
   if (OB_LIKELY((++cur_idx_) < count_)) {
-  } else if (!eval_ctx_->is_vectorized() && (OB_FAIL(token_iter_->get_next_row()))) {
-    if (OB_UNLIKELY(OB_ITER_END != ret)) {
-      LOG_WARN("failed to get row from inverted index", K(ret));
-    }
-  } else if (!eval_ctx_->is_vectorized() && FALSE_IT(count_ = 1)) {
-  } else if (eval_ctx_->is_vectorized() && OB_FAIL(token_iter_->get_next_batch(max_batch_size_, count_))) {
-    if (OB_UNLIKELY(OB_ITER_END != ret)) {
-      LOG_WARN("failed to get batch rows from inverted index", K(ret));
-    } else if (count_ != 0) {
-      ret = OB_SUCCESS;
+    KernelR5Stat::dim_fast_cnt_ += 1;
+  } else {
+    int64_t r5_t1 = ObTimeUtility::current_time();
+    if (!eval_ctx_->is_vectorized() && OB_FAIL(token_iter_->get_next_row())) {
+      if (OB_UNLIKELY(OB_ITER_END != ret)) {
+        LOG_WARN("failed to get row from inverted index", K(ret));
+      }
+    } else if (!eval_ctx_->is_vectorized() && FALSE_IT(count_ = 1)) {
+    } else if (eval_ctx_->is_vectorized() && OB_FAIL(token_iter_->get_next_batch(max_batch_size_, count_))) {
+      if (OB_UNLIKELY(OB_ITER_END != ret)) {
+        LOG_WARN("failed to get batch rows from inverted index", K(ret));
+      } else if (count_ != 0) {
+        ret = OB_SUCCESS;
+        need_load = true;
+      }
+    } else {
       need_load = true;
     }
-  } else {
-    need_load = true;
+    KernelR5Stat::dim_pull_ns_ += ObTimeUtility::current_time() - r5_t1;
+    KernelR5Stat::dim_pull_cnt_ += 1;
   }
   if (OB_SUCC(ret) && need_load) {
+    int64_t r5_t2 = ObTimeUtility::current_time();
     if (OB_NOT_NULL(relevance_expr_)) {
       if (OB_FAIL(save_relevances_and_docids())) {
         LOG_WARN("failed to evaluate simarity expr", K(ret));
@@ -741,7 +754,10 @@ int ObTextRetrievalDaaTTokenIter::get_next_row() {
     } else if (OB_FAIL(save_docids())) {
         LOG_WARN("failed to save doc ids", K(ret));
     }
+    KernelR5Stat::dim_save_ns_ += ObTimeUtility::current_time() - r5_t2;
+    KernelR5Stat::dim_last_count_ = count_;
   }
+  KernelR5Stat::dim_next_ns_ += ObTimeUtility::current_time() - r5_t0;
   return ret;
 }
 

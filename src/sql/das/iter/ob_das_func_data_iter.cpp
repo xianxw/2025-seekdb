@@ -21,6 +21,8 @@
 #include "sql/das/ob_das_scan_op.h"
 #include "sql/engine/ob_exec_context.h"
 #include "sql/das/iter/sparse_retrieval/ob_das_tr_merge_iter.h"
+#include "sql/das/ob_kernel_r5_stat.h"
+#include "lib/time/ob_time_utility.h"
 
 using namespace oceanbase::common;
 
@@ -69,6 +71,7 @@ int ObDASFuncDataIter::do_table_scan()
 {
   int ret = OB_SUCCESS;
   start_table_scan_ = true;
+  int64_t t0 = ObTimeUtility::current_time();
   if (OB_ISNULL(tr_merge_iters_) || OB_UNLIKELY(iter_count_ <= 0)) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("unexpeted error, tr merge iter is nullptr", K(ret));
@@ -92,6 +95,7 @@ int ObDASFuncDataIter::do_table_scan()
         LOG_WARN("fail to do table scan for tr merge iter", K(ret), K(i), KPC(tr_merge_iters_[i]));
       }
     }
+    KernelR5Stat::func_open_ns_ += ObTimeUtility::current_time() - t0;
   }
   return ret;
 }
@@ -99,6 +103,7 @@ int ObDASFuncDataIter::do_table_scan()
 int ObDASFuncDataIter::rescan()
 {
   int ret = OB_SUCCESS;
+  int64_t t0 = ObTimeUtility::current_time();
   if (OB_ISNULL(tr_merge_iters_) || OB_UNLIKELY(iter_count_ <= 0)) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("unexpeted error, tr merge iter is nullptr", K(ret));
@@ -115,6 +120,7 @@ int ObDASFuncDataIter::rescan()
         LOG_WARN("fail to do table scan for tr merge iter", K(ret), K(i), KPC(tr_merge_iters_[i]));
       }
     }
+    KernelR5Stat::func_open_ns_ += ObTimeUtility::current_time() - t0;
   }
   return ret;
 }
@@ -245,6 +251,32 @@ int ObDASFuncDataIter::inner_reuse()
 int ObDASFuncDataIter::inner_release()
 {
   int ret = OB_SUCCESS;
+  LOG_INFO("KERNEL_R5A: cum", "fill_ns", KernelR5Stat::fill_ns_.load(),
+           "fill_rows", KernelR5Stat::fill_rows_.load(),
+           "func_open_ns", KernelR5Stat::func_open_ns_.load(),
+           "func_get_ns", KernelR5Stat::func_get_ns_.load(),
+           "trm_get_ns", KernelR5Stat::trm_get_ns_.load(),
+           "lookup_load_ns", KernelR5Stat::lookup_load_ns_.load(),
+           "lookup_proj_ns", KernelR5Stat::lookup_proj_ns_.load(),
+           "scaniter_open_ns", KernelR5Stat::scaniter_open_ns_.load(),
+           "scaniter_get_ns", KernelR5Stat::scaniter_get_ns_.load(),
+           "bm25_ns", KernelR5Stat::bm25_ns_.load(),
+           "bm25_cnt", KernelR5Stat::bm25_cnt_.load());
+  LOG_INFO("KERNEL_R5B: cum", "daat_get_ns", KernelR5Stat::daat_get_ns_.load(),
+           "sync_rows", KernelR5Stat::sync_rows_.load(),
+           "daat_fill_ns", KernelR5Stat::daat_fill_ns_.load(),
+           "daat_collect_ns", KernelR5Stat::daat_collect_ns_.load(),
+           "daat_filter_ns", KernelR5Stat::daat_filter_ns_.load(),
+           "daat_cache_ns", KernelR5Stat::daat_cache_ns_.load(),
+           "daat_rounds", KernelR5Stat::daat_rounds_.load(),
+           "dim_next_ns", KernelR5Stat::dim_next_ns_.load(),
+           "dim_fast", KernelR5Stat::dim_fast_cnt_.load(),
+           "dim_pull_ns", KernelR5Stat::dim_pull_ns_.load(),
+           "dim_pull_cnt", KernelR5Stat::dim_pull_cnt_.load(),
+           "dim_save_ns", KernelR5Stat::dim_save_ns_.load(),
+           "est_ns", KernelR5Stat::est_ns_.load(),
+           "est_cnt", KernelR5Stat::est_cnt_.load(),
+           "sync_skipped", KernelR5Stat::sync_skipped_.load());
   if (OB_NOT_NULL(merge_memctx_)) {
     DESTROY_CONTEXT(merge_memctx_);
     merge_memctx_ = nullptr;
@@ -269,6 +301,7 @@ int ObDASFuncDataIter::inner_release()
 int ObDASFuncDataIter::inner_get_next_row()
 {
   int ret = OB_SUCCESS;
+  int64_t t0 = ObTimeUtility::current_time();
   int64_t default_size = doc_ids_.count();
   bool iter_end = false;
   if (OB_ISNULL(tr_merge_iters_)) {
@@ -298,12 +331,14 @@ int ObDASFuncDataIter::inner_get_next_row()
   if (OB_SUCC(ret) && iter_end) {
     ret = OB_ITER_END;
   }
+  KernelR5Stat::func_get_ns_ += ObTimeUtility::current_time() - t0;
   return ret;
 }
 
 int ObDASFuncDataIter::inner_get_next_rows(int64_t &count, int64_t capacity)
 {
   int ret = OB_SUCCESS;
+  int64_t t0 = ObTimeUtility::current_time();
   int64_t main_lookup_count = 0;
   int64_t tr_merge_count = 0;
   int64_t default_size = doc_ids_.count();
@@ -365,6 +400,7 @@ int ObDASFuncDataIter::inner_get_next_rows(int64_t &count, int64_t capacity)
       read_count_ = read_count_ + count;
     }
   }
+  KernelR5Stat::func_get_ns_ += ObTimeUtility::current_time() - t0;
   return ret;
 }
 

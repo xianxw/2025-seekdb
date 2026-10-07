@@ -17,6 +17,8 @@
 #define USING_LOG_PREFIX SQL_DAS
 #include "ob_das_tr_merge_iter.h"
 #include "sql/das/ob_das_ir_define.h"
+#include "sql/das/ob_kernel_r5_stat.h"
+#include "lib/time/ob_time_utility.h"
 
 namespace oceanbase
 {
@@ -756,16 +758,62 @@ int ObDASTRMergeIter::set_children_iter_rangekey(const common::ObIArray<std::pai
     int64_t group_idx = ObNewRange::get_group_idx(group_id);
     ObNewRange inv_idx_scan_range;
     const int64_t dim_iter_cnt = taat_mode_ ? 1 : query_tokens_.count();
+    // KERNEL_R6(optimization): when the batch's doc ids are strictly consecutive
+    // numeric values, replace the per-doc point ranges with one closed span
+    // range per token, so the storage layer does a single ordered scan instead
+    // of N memtable point lookups. The lookup-iter sync loop tolerates
+    // superset merge output (merge-join semantics), so occasional stray rows
+    // from the span are skipped, never returned.
+    bool coalesce_ok = false;
+    uint64_t id_lo = 0;
+    uint64_t id_hi = 0;
+    if (batch_size > 0 && !taat_mode_) {
+      const ObObjMeta &id_meta = ir_ctdef_->inv_scan_domain_id_col_->obj_meta_;
+      const bool is_int_id = (ObUInt64Type == id_meta.get_type() || ObIntType == id_meta.get_type());
+      if (is_int_id && batch_size <= 4096) {
+        uint64_t prev_id = 0;
+        bool all_int = true;
+        for (int64_t j = 0; all_int && j < batch_size; ++j) {
+          const ObDocIdExt &doc_id = virtual_rangekeys.at(j).first;
+          if (doc_id.get_datum().is_null()) {
+            all_int = false;
+          } else {
+            const uint64_t cur_id = doc_id.get_datum().get_uint();
+            if (0 == j) {
+              prev_id = cur_id;
+            } else if (cur_id != prev_id + 1) {
+              all_int = false;
+            } else {
+              prev_id = cur_id;
+            }
+          }
+        }
+        if (all_int) {
+          coalesce_ok = true;
+          id_lo = virtual_rangekeys.at(0).first.get_datum().get_uint();
+          id_hi = virtual_rangekeys.at(batch_size - 1).first.get_datum().get_uint();
+        }
+      }
+    }
     for (int64_t i = 0; OB_SUCC(ret) && i < dim_iter_cnt; ++i) {
-      for (int64_t j = 0; OB_SUCC(ret) && j < batch_size; ++j) {
-        if (OB_FAIL(gen_inv_idx_scan_one_range(query_tokens_[i],
-                                               virtual_rangekeys.at(j).first,
-                                               inv_idx_scan_range))) {
-          LOG_WARN("failed to generate inverted index scan range", K(ret),
-                   K(query_tokens_[i]), K(virtual_rangekeys.at(j).first));
+      if (coalesce_ok) {
+        if (OB_FAIL(gen_inv_idx_scan_range_span(query_tokens_[i], id_lo, id_hi, inv_idx_scan_range))) {
+          LOG_WARN("failed to generate coalesced inverted index scan range", K(ret), K(query_tokens_[i]));
         } else if (FALSE_IT(inv_idx_scan_range.group_idx_ = group_idx)) {
         } else if (OB_FAIL(inv_scan_params_[i]->key_ranges_.push_back(inv_idx_scan_range))) {
           LOG_WARN("failed to push back lookup range", K(ret));
+        }
+      } else {
+        for (int64_t j = 0; OB_SUCC(ret) && j < batch_size; ++j) {
+          if (OB_FAIL(gen_inv_idx_scan_one_range(query_tokens_[i],
+                                                 virtual_rangekeys.at(j).first,
+                                                 inv_idx_scan_range))) {
+            LOG_WARN("failed to generate inverted index scan range", K(ret),
+                     K(query_tokens_[i]), K(virtual_rangekeys.at(j).first));
+          } else if (FALSE_IT(inv_idx_scan_range.group_idx_ = group_idx)) {
+          } else if (OB_FAIL(inv_scan_params_[i]->key_ranges_.push_back(inv_idx_scan_range))) {
+            LOG_WARN("failed to push back lookup range", K(ret));
+          }
         }
       }
 
@@ -852,6 +900,53 @@ int ObDASTRMergeIter::gen_inv_idx_scan_one_range(const ObString &query_token, co
     common::ObTableID inv_table_id = ir_ctdef_->get_inv_idx_scan_ctdef()->ref_table_id_;
     if (OB_FAIL(scan_range.build_range(inv_table_id, row_key))) {
       LOG_WARN("failed to build lookup range", K(ret), K(inv_table_id), K(row_key));
+    }
+  }
+  return ret;
+}
+
+int ObDASTRMergeIter::gen_inv_idx_scan_range_span(const ObString &query_token,
+                                                  const uint64_t lo_doc_id,
+                                                  const uint64_t hi_doc_id,
+                                                  ObNewRange &scan_range)
+{
+  // KERNEL_R6(optimization): closed range [lo, hi] over consecutive numeric doc ids
+  int ret = OB_SUCCESS;
+  void *buf = nullptr;
+  ObObj *obj_ptr = nullptr;
+  common::ObArenaAllocator &ctx_alloc = mem_context_->get_arena_allocator();
+  constexpr int64_t obj_cnt = INV_IDX_ROWKEY_COL_CNT * 2;
+  ObObj tmp_obj;
+  tmp_obj.set_string(ObVarcharType, query_token);
+  tmp_obj.set_meta_type(ir_ctdef_->search_text_->obj_meta_);
+  const ObObjMeta &id_meta = ir_ctdef_->inv_scan_domain_id_col_->obj_meta_;
+
+  if (OB_ISNULL(buf = ctx_alloc.alloc(sizeof(ObObj) * obj_cnt))) {
+    ret = OB_ALLOCATE_MEMORY_FAILED;
+    LOG_WARN("failed to allocate memory for rowkey obj", K(ret));
+  } else if (OB_ISNULL(obj_ptr = new (buf) ObObj[obj_cnt])) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("unexpected nullptr", K(ret));
+  } else if (OB_FAIL(ob_write_obj(ctx_alloc, tmp_obj, obj_ptr[0]))) {
+    LOG_WARN("failed to write obj", K(ret));
+  } else if (OB_FAIL(ob_write_obj(ctx_alloc, tmp_obj, obj_ptr[2]))) {
+    LOG_WARN("failed to write obj", K(ret));
+  } else {
+    ObDatum lo_datum;
+    ObDatum hi_datum;
+    lo_datum.set_uint(lo_doc_id);
+    hi_datum.set_uint(hi_doc_id);
+    if (OB_FAIL(lo_datum.to_obj(obj_ptr[1], id_meta))) {
+      LOG_WARN("failed to set lo obj", K(ret));
+    } else if (OB_FAIL(hi_datum.to_obj(obj_ptr[3], id_meta))) {
+      LOG_WARN("failed to set hi obj", K(ret));
+    } else {
+      common::ObTableID inv_table_id = ir_ctdef_->get_inv_idx_scan_ctdef()->ref_table_id_;
+      scan_range.table_id_ = inv_table_id;
+      scan_range.start_key_.assign(obj_ptr, INV_IDX_ROWKEY_COL_CNT);
+      scan_range.end_key_.assign(&obj_ptr[2], INV_IDX_ROWKEY_COL_CNT);
+      scan_range.border_flag_.set_inclusive_start();
+      scan_range.border_flag_.set_inclusive_end();
     }
   }
   return ret;
@@ -1069,6 +1164,7 @@ int ObDASTRMergeIter::inner_release()
 int ObDASTRMergeIter::inner_get_next_row()
 {
   int ret = OB_SUCCESS;
+  int64_t t0 = ObTimeUtility::current_time();
   if (IS_NOT_INIT) {
     ret = OB_NOT_INIT;
     LOG_WARN("not inited", K(ret));
@@ -1078,12 +1174,14 @@ int ObDASTRMergeIter::inner_get_next_row()
   } else {
     ret = sparse_retrieval_iter_->get_next_row();
   }
+  KernelR5Stat::trm_get_ns_ += ObTimeUtility::current_time() - t0;
   return ret;
 }
 
 int ObDASTRMergeIter::inner_get_next_rows(int64_t &count, int64_t capacity)
 {
   int ret = OB_SUCCESS;
+  int64_t t0 = ObTimeUtility::current_time();
   if (IS_NOT_INIT) {
     ret = OB_NOT_INIT;
     LOG_WARN("not inited", K(ret));
@@ -1095,6 +1193,7 @@ int ObDASTRMergeIter::inner_get_next_rows(int64_t &count, int64_t capacity)
   } else {
     ret = sparse_retrieval_iter_->get_next_rows(capacity, count);
   }
+  KernelR5Stat::trm_get_ns_ += ObTimeUtility::current_time() - t0;
   return ret;
 }
 

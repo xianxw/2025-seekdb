@@ -17,6 +17,8 @@
 #define USING_LOG_PREFIX STORAGE
 
 #include "ob_sparse_lookup_iter.h"
+#include "sql/das/ob_kernel_r5_stat.h"
+#include "lib/time/ob_time_utility.h"
 
 namespace oceanbase
 {
@@ -183,10 +185,12 @@ void ObSRSortedLookupIter::reset()
 int ObSRSortedLookupIter::load_results()
 {
   int ret = OB_SUCCESS;
+  int64_t t0 = ObTimeUtility::current_time();
   int cur_idx = 0;
   bool iter_end = false;
   while (OB_SUCC(ret) && !iter_end && cur_idx < rangekey_size_) {
     int64_t sub_count = 0;
+    int64_t r5_t0 = ObTimeUtility::current_time();
     if (OB_FAIL(merge_iter_->get_next_rows(rangekey_size_ - cur_idx, sub_count))) {
       iter_end = true;
       if (OB_UNLIKELY(OB_ITER_END != ret)) {
@@ -195,11 +199,13 @@ int ObSRSortedLookupIter::load_results()
         ret = OB_SUCCESS;
       }
     }
+    KernelR5Stat::daat_get_ns_ += ObTimeUtility::current_time() - r5_t0;
     LOG_DEBUG("sr lookup iter loading results", K(ret), K_(rangekey_size), K(cur_idx), K(sub_count));
     ObEvalCtx *eval_ctx = iter_param_->eval_ctx_;
     const ObDatumVector &id_datums = iter_param_->id_proj_expr_->locate_expr_datumvector(*eval_ctx);
     const ObDatumVector &relevance_datums = iter_param_->relevance_proj_expr_->locate_expr_datumvector(*eval_ctx);
     int cmp_result = 0;
+    KernelR5Stat::sync_rows_ += sub_count;
     for (int64_t i = 0; OB_SUCC(ret) && i < sub_count; ) {
       if (OB_UNLIKELY(cur_idx >= rangekey_size_)) {
         ret = OB_ERR_UNEXPECTED;
@@ -214,20 +220,26 @@ int ObSRSortedLookupIter::load_results()
         cached_relevances_[cur_idx] = 0.0;
         ++cur_idx;
       } else {
-        ret = OB_ERR_UNEXPECTED;
-        LOG_WARN("unexpected comparison result", K(ret), K(cmp_result));
+        // KERNEL_R6: merge-join tolerance. The merge stream may contain doc ids
+        // outside the requested rangekey set (e.g. when the token scan uses a
+        // coalesced span range). Skip them; they belong to no requested doc and
+        // must never be projected.
+        ++i;
+        KernelR5Stat::sync_skipped_ += 1;
       }
     }
   }
   if (OB_ITER_END == ret) {
     ret = OB_SUCCESS;
   }
+  KernelR5Stat::lookup_load_ns_ += ObTimeUtility::current_time() - t0;
   return ret;
 }
 
 int ObSRSortedLookupIter::project_results(const int64_t capacity, int64_t &count)
 {
   int ret = OB_SUCCESS;
+  int64_t t0 = ObTimeUtility::current_time();
   count = 0;
   ObEvalCtx *eval_ctx = iter_param_->eval_ctx_;
   ObEvalCtx::BatchInfoScopeGuard guard(*eval_ctx);
@@ -251,6 +263,7 @@ int ObSRSortedLookupIter::project_results(const int64_t capacity, int64_t &count
   }
   id_proj_expr->set_evaluated_projected(*eval_ctx);
   relevance_proj_expr->set_evaluated_projected(*eval_ctx);
+  KernelR5Stat::lookup_proj_ns_ += ObTimeUtility::current_time() - t0;
   return ret;
 }
 

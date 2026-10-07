@@ -17,6 +17,8 @@
 #define USING_LOG_PREFIX STORAGE
 
 #include "ob_sparse_daat_iter.h"
+#include "sql/das/ob_kernel_r5_stat.h"
+#include "lib/time/ob_time_utility.h"
 
 namespace oceanbase
 {
@@ -287,19 +289,34 @@ int ObSRDaaTIterImpl::do_one_merge_round(int64_t &count)
   bool need_project = true;
   double relevance = 0.0;
   const ObDatum *id_datum = nullptr;
+  int64_t r5_t1 = ObTimeUtility::current_time();
   if (OB_FAIL(fill_merge_heap())) {
     if (OB_UNLIKELY(OB_ITER_END != ret)) {
       LOG_WARN("failed to fill merge heap", K(ret));
     }
+  }
+  KernelR5Stat::daat_fill_ns_ += ObTimeUtility::current_time() - r5_t1;
+  int64_t r5_t2 = ObTimeUtility::current_time();
+  if (OB_FAIL(ret)) {
   } else if (OB_FAIL(collect_dims_by_id(id_datum, relevance, need_project))) {
     LOG_WARN("failed to merge dimensions", K(ret));
+  }
+  KernelR5Stat::daat_collect_ns_ += ObTimeUtility::current_time() - r5_t2;
+  int64_t r5_t3 = ObTimeUtility::current_time();
+  if (OB_FAIL(ret)) {
   } else if (need_project && OB_FAIL(filter_on_demand(count, relevance, need_project))) {
     LOG_WARN("failed to process filter", K(ret));
+  }
+  KernelR5Stat::daat_filter_ns_ += ObTimeUtility::current_time() - r5_t3;
+  int64_t r5_t4 = ObTimeUtility::current_time();
+  if (OB_FAIL(ret)) {
   } else if (need_project && OB_FAIL(cache_result(count, *id_datum, relevance))) {
     if (OB_ITER_END != ret) {
       LOG_WARN("failed to cache result", K(ret));
     }
   }
+  KernelR5Stat::daat_cache_ns_ += ObTimeUtility::current_time() - r5_t4;
+  KernelR5Stat::daat_rounds_ += 1;
   return ret;
 }
 

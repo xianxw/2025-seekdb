@@ -17,6 +17,8 @@
 #define USING_LOG_PREFIX SQL_ENG
 #include "sql/engine/expr/ob_expr_bm25.h"
 #include "sql/resolver/expr/ob_raw_expr.h"
+#include "sql/das/ob_kernel_r5_stat.h"
+#include "lib/time/ob_time_utility.h"
 
 namespace oceanbase
 {
@@ -62,6 +64,8 @@ int ObExprBM25::cg_expr(ObExprCGCtx &expr_cg_ctx, const ObRawExpr &raw_expr, ObE
 int ObExprBM25::eval_bm25_relevance_expr(const ObExpr &expr, ObEvalCtx &ctx, ObDatum &res_datum)
 {
   int ret = OB_SUCCESS;
+  int64_t r5_t0 = ObTimeUtility::current_time();
+  KernelR5Stat::bm25_cnt_ += 1;
   ObDatum *token_doc_cnt_datum = nullptr;
   ObDatum *total_doc_cnt_datum = nullptr;
   ObDatum *doc_token_cnt_datum = nullptr;
@@ -95,12 +99,15 @@ int ObExprBM25::eval_bm25_relevance_expr(const ObExpr &expr, ObEvalCtx &ctx, ObD
         K(token_doc_cnt), K(total_doc_cnt), K(related_token_cnt), K(doc_token_cnt), K(avg_doc_token_cnt),
         K(norm_len), K(token_weight), K(doc_weight), K(relevance));
   }
+  KernelR5Stat::bm25_ns_ += ObTimeUtility::current_time() - r5_t0;
   return ret;
 }
 
 int ObExprBM25::eval_batch_bm25_relevance_expr(const ObExpr &expr, ObEvalCtx &ctx, const ObBitVector &skip, const int64_t size)
 {
   int ret = OB_SUCCESS;
+  int64_t r5_t0 = ObTimeUtility::current_time();
+  KernelR5Stat::bm25_cnt_ += size;
   ObDatumVector token_doc_cnt_datum;
   ObDatumVector total_doc_cnt_datum;
   ObDatumVector doc_token_cnt_datum;
@@ -147,6 +154,7 @@ int ObExprBM25::eval_batch_bm25_relevance_expr(const ObExpr &expr, ObEvalCtx &ct
         }
       }
   }
+  KernelR5Stat::bm25_ns_ += ObTimeUtility::current_time() - r5_t0;
   return ret;
 }
 

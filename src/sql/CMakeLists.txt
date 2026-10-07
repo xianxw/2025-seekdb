@@ -50,6 +50,7 @@ ob_set_subtarget(ob_sql das
   das/ob_das_delete_op.cpp
   das/ob_das_dml_ctx_define.cpp
   das/ob_das_extra_data.cpp
+  das/ob_kernel_r5_stat.cpp
   das/ob_das_factory.cpp
   das/ob_das_insert_op.cpp
   das/ob_das_lock_op.cpp

@@ -16,6 +16,8 @@
 
 #define USING_LOG_PREFIX SQL_DAS
 #include "sql/das/iter/ob_das_scan_iter.h"
+#include "sql/das/ob_kernel_r5_stat.h"
+#include "lib/time/ob_time_utility.h"
 #include "storage/tx_storage/ob_access_service.h"
 #include "src/sql/engine/ob_exec_context.h"
 
@@ -74,6 +76,7 @@ int ObDASScanIter::inner_release()
 int ObDASScanIter::do_table_scan()
 {
   int ret = OB_SUCCESS;
+  int64_t r5_t0 = ObTimeUtility::current_time();
   if (OB_ISNULL(scan_param_)) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("unexpected nullptr scan param", K(ret));
@@ -88,6 +91,7 @@ int ObDASScanIter::do_table_scan()
     }
   }
   LOG_DEBUG("[DAS ITER] scan iter do table scan", KPC_(scan_param), K(ret));
+  KernelR5Stat::scaniter_open_ns_ += ObTimeUtility::current_time() - r5_t0;
 
   return ret;
 }
@@ -95,6 +99,7 @@ int ObDASScanIter::do_table_scan()
 int ObDASScanIter::rescan()
 {
   int ret = OB_SUCCESS;
+  int64_t r5_t0 = ObTimeUtility::current_time();
   if (OB_ISNULL(scan_param_)) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("unexpected nullptr scan param", K(ret));
@@ -108,6 +113,7 @@ int ObDASScanIter::rescan()
     scan_param_->need_switch_param_ = false;
   }
   LOG_DEBUG("[DAS ITER] das scan iter rescan", KPC_(scan_param), K(ret));
+  KernelR5Stat::scaniter_open_ns_ += ObTimeUtility::current_time() - r5_t0;
 
   return ret;
 }
@@ -115,6 +121,7 @@ int ObDASScanIter::rescan()
 int ObDASScanIter::inner_get_next_row()
 {
   int ret = OB_SUCCESS;
+  int64_t r5_t0 = ObTimeUtility::current_time();
   common::ObASHTabletIdSetterGuard ash_tablet_id_guard(scan_param_ != nullptr? scan_param_->index_id_ : 0);
 
   if (OB_ISNULL(result_)) {
@@ -125,12 +132,14 @@ int ObDASScanIter::inner_get_next_row()
       LOG_WARN("failed to get next row", K(ret));
     }
   }
+  KernelR5Stat::scaniter_get_ns_ += ObTimeUtility::current_time() - r5_t0;
   return ret;
 }
 
 int ObDASScanIter::inner_get_next_rows(int64_t &count, int64_t capacity)
 {
   int ret = OB_SUCCESS;
+  int64_t r5_t0 = ObTimeUtility::current_time();
   common::ObASHTabletIdSetterGuard ash_tablet_id_guard(scan_param_ != nullptr? scan_param_->index_id_ : 0);
 
   if (OB_ISNULL(result_)) {
@@ -144,6 +153,7 @@ int ObDASScanIter::inner_get_next_rows(int64_t &count, int64_t capacity)
   LOG_TRACE("[DAS ITER] scan iter get next rows", K(count), K(capacity), KPC_(scan_param), K(ret));
   const ObBitVector *skip = nullptr;
   PRINT_VECTORIZED_ROWS(SQL, DEBUG, *eval_ctx_, *output_, count, skip);
+  KernelR5Stat::scaniter_get_ns_ += ObTimeUtility::current_time() - r5_t0;
   return ret;
 }
 
